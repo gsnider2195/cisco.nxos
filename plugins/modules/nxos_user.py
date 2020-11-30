@@ -246,7 +246,9 @@ def map_obj_to_commands(updates, module):
         def needs_password_update():
             if not want["configured_password"]:
                 return False
-            if have["configured_password"]:
+            if not have.get("configured_password"):
+                return True
+            else:
                 if have["configured_password"].startswith("$1$"):
                     hash_algorithm = md5_crypt
                 elif have["configured_password"].startswith("$5$"):
