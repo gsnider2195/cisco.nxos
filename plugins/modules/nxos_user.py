@@ -286,7 +286,7 @@ def map_obj_to_commands(updates, module):
     return commands
 
 
-def parse_password(module, data):
+def parse_password(data, module):
     include = "| include '^username %s password '" % data["usr_name"]
     user_cfg = get_config(module, flags=[include])
     match = re.search(r'username \S+ password 5 (\S+)', user_cfg)
@@ -319,7 +319,7 @@ def map_config_to_obj(module):
         objects.append(
             {
                 "name": item["usr_name"],
-                "configured_password": parse_password(module, item),
+                "configured_password": parse_password(item, module),
                 "sshkey": item.get("sshkey_info"),
                 "roles": parse_roles(item),
                 "state": "present",
