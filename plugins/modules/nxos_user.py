@@ -55,16 +55,6 @@ options:
           provided in cleartext and it will be encrypted on the device. Please note that
           this option is not same as C(provider password).
         type: str
-      update_password:
-        description:
-        - Since passwords are encrypted in the device running config, this argument will
-          instruct the module when to change the password.  When set to C(always), the
-          password will always be updated in the device and when set to C(on_create) the
-          password will be updated only if the username is created.
-        choices:
-        - on_create
-        - always
-        type: str
       roles:
         description:
         - The C(role) argument configures the role for the username in the device running
@@ -99,17 +89,6 @@ options:
     - The password to be configured on the network device. The password needs to be
       provided in cleartext and it will be encrypted on the device. Please note that
       this option is not same as C(provider password).
-    type: str
-  update_password:
-    description:
-    - Since passwords are encrypted in the device running config, this argument will
-      instruct the module when to change the password.  When set to C(always), the
-      password will always be updated in the device and when set to C(on_create) the
-      password will be updated only if the username is created.
-    default: always
-    choices:
-    - on_create
-    - always
     type: str
   roles:
     description:
@@ -178,6 +157,7 @@ import re
 
 from copy import deepcopy
 from functools import partial
+from passlib.hash import md5_crypt, sha256_crypt
 
 from ansible_collections.cisco.nxos.plugins.module_utils.network.nxos.nxos import (
     run_commands,
@@ -235,7 +215,6 @@ def validate_roles(value, module):
 
 def map_obj_to_commands(updates, module):
     commands = list()
-    update_password = module.params["update_password"]
 
     for update in updates:
         want, have = update
@@ -264,6 +243,25 @@ def map_obj_to_commands(updates, module):
                 return True
             return False
 
+        def needs_password_update():
+            if not want["configured_password"]:
+                return False
+            if have["configured_password"]:
+                if have["configured_password"].startswith("$1$"):
+                    hash_algorithm = md5_crypt
+                elif have["configured_password"].startswith("$5$"):
+                    hash_algorithm = sha256_crypt
+                else:
+                    raise AnsibleException(
+                        "unknown password hash algorithm for user" % have["name"]
+                    )
+                return not hash_algorithm.verify(
+                    want["configured_password"],
+                    have["configured_password"]
+                )
+
+            return False
+
         if want["state"] == "absent":
             commands.append("no username %s" % want["name"])
             continue
@@ -274,9 +272,8 @@ def map_obj_to_commands(updates, module):
             if not roles_configured:
                 commands.append("username %s" % want["name"])
 
-        if needs_update("configured_password"):
-            if update_password == "always" or not have:
-                add("password %s" % want["configured_password"])
+        if needs_password_update():
+            add("password %s" % want["configured_password"])
 
         if needs_update("sshkey"):
             add("sshkey %s" % want["sshkey"])
@@ -287,9 +284,13 @@ def map_obj_to_commands(updates, module):
     return commands
 
 
-def parse_password(data):
-    if not data.get("remote_login"):
-        return "<PASSWORD>"
+def parse_password(module, data):
+    include = "| include '^username %s password '" % data["usr_name"]
+    user_cfg = get_config(module, flags=[include])
+    match = re.search(r'username \S+ password 5 (\S+)', user_cfg)
+    if match:
+        return match.group(1)
+    return None
 
 
 def parse_roles(data):
@@ -316,7 +317,7 @@ def map_config_to_obj(module):
         objects.append(
             {
                 "name": item["usr_name"],
-                "configured_password": parse_password(item),
+                "configured_password": parse_password(module, item),
                 "sshkey": item.get("sshkey_info"),
                 "roles": parse_roles(item),
                 "state": "present",
@@ -403,9 +404,6 @@ def main():
     element_spec = dict(
         name=dict(),
         configured_password=dict(no_log=True),
-        update_password=dict(
-            default="always", choices=["on_create", "always"]
-        ),
         roles=dict(type="list", aliases=["role"], elements="str"),
         sshkey=dict(),
         state=dict(default="present", choices=["present", "absent"]),
